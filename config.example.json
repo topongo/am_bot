@@ -1,6 +1,6 @@
 {
     "telegram": {
-        "bot_token": "BOTTOKEN",
+        "bot_token": "",
         "bot_chatID": 0
     },
     "location": {

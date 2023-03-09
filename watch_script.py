@@ -31,10 +31,11 @@ except:
 
 try:
     # Create the tgtg client with my credentials
-    tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'])
+    tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'], cookie=config["tgtg"]["cookie"])
 except KeyError:
     # print(f"Failed to obtain TGTG credentials.\nRun \"python3 {sys.argv[0]} <your_email>\" to generate TGTG credentials.")
     # exit(1)
+    exit(1)
     try:
         email = input("Type your TooGoodToGo email address: ")
         client = TgtgClient(email=email)
@@ -44,7 +45,7 @@ except KeyError:
         f.seek(0)
         json.dump(config, f, indent = 4)
         f.truncate()
-        tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'])
+        tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'], cookie=config['tgtg']['cookie'])
     except:
         print(traceback.format_exc())
         exit(1)
@@ -72,8 +73,9 @@ try:
         while bot_chatID == "0":
             response = requests.get('https://api.telegram.org/bot' + bot_token + '/getUpdates?limit=1&offset=-1') 
             # print(response.json())
-            if (response.json()['result'][0]['message']['text'] == pin):
-                bot_chatID = str(response.json()['result'][0]['message']['chat']['id'])
+            res = response.json()
+            if res["result"] and res['result'][0]['message']['text'] == pin:
+                bot_chatID = str(res['result'][0]['message']['chat']['id'])
                 print("Your chat id:" + bot_chatID)
                 config['telegram']['bot_chatID'] = int(bot_chatID)
                 f.seek(0)
@@ -95,6 +97,11 @@ except:
 
 # Init the favourites in stock list as a global variable
 tgtg_in_stock = list()
+if os.path.exists("tgtg_in_stock.json"):
+    try:
+        tgtg_in_stock = json.load(open("tgtg_in_stock.json"))
+    except:
+        pass
 foodsi_in_stock = list()
 
 
@@ -234,6 +241,7 @@ def toogoodtogo():
 
     # Reset the global information with the newest fetch
     tgtg_in_stock = parsed_api
+    json.dump(tgtg_in_stock, open("tgtg_in_stock.json", "w+"))
 
     # Print out some maintenance info in the terminal
     print(f"TGTG: API run at {time.ctime(time.time())} successful.")
