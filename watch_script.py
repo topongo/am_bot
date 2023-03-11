@@ -1,389 +1,377 @@
 from tgtg import TgtgClient
 from json import load, dump
-import requests
+from argparse import ArgumentParser
+from shutil import copy
+from telebotapi import TelegramBot, Chat, Message
 import schedule
 import time
 import os
 import traceback
-import json
 import maya
 import datetime
-import inspect
-import sys
-from urllib.parse import quote
+import logging
 import random
 import string
-import dateutil.parser
 
-try:
-    filename = inspect.getframeinfo(inspect.currentframe()).filename
-    path = os.path.dirname(os.path.abspath(filename))
-    # Load credentials from a file
-    f = open(os.path.join(path, 'config.json'), mode='r+')
-    config = load(f)
-except FileNotFoundError:
-    print("No files found for local credentials.")
-    exit(1)
-except:
-    print("Unexpected error")
-    print(traceback.format_exc())
-    exit(1)
 
-try:
-    # Create the tgtg client with my credentials
-    tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'], cookie=config["tgtg"]["cookie"])
-except KeyError:
-    # print(f"Failed to obtain TGTG credentials.\nRun \"python3 {sys.argv[0]} <your_email>\" to generate TGTG credentials.")
-    # exit(1)
-    exit(1)
+config = {}
+tgtg_in_stock = []
+
+
+def dump_to_config():
+    global config
+    global args
+
+    dump(config, open(args.configs, "w+"), indent=4)
+
+
+def dump_stock():
+    global tgtg_in_stock
+    global args
+
+    dump(tgtg_in_stock, open(args.stock, "w+"), indent=4)
+
+
+def main():
+    global args
+    global config
+    global tgtg_in_stock
+
+    def exit_no_config():
+        logging.error("missing configs, cannot proceed.")
+        return 2
+
+    if args.configs is None:
+        if os.path.exists("config.json"):
+            config = load(open("config.json"))
+            args.configs = "config.json"
+        else:
+            if os.path.exists("config.example.json"):
+                logging.warning("no config found")
+                if input("Make a copy of example? (y/N) ") in "yY":
+                    copy("config.example.json", "config.json")
+                    logging.warning("please compile the newly copied config.json, then rerun the program")
+                    exit()
+                else:
+                    return exit_no_config()
+            else:
+                return exit_no_config()
+    else:
+        if os.path.exists(args.configs):
+            config = load(open(args.configs))
+        else:
+            logging.error("cannot read %s: no such file or directory", args.configs)
+            return exit_no_config()
+
+    def validate_config(c):
+        if "tgtg" not in c or "telegram" not in c or "location" not in c:
+            return
+
+        for i in ("access_token", "refresh_token", "user_id", "cookie"):
+            if i not in c["tgtg"]:
+                return
+
+        for i in ("long", "lat", "range"):
+            if i not in c["location"]:
+                return
+
+        for i in ("bot_token", "bot_chat_id", "admin_chat_id"):
+            if i not in c["location"]:
+                return
+
+    validate_config(config)
+
     try:
+        # Create the tgtg client with my credentials
+        tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'],
+                                 refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'],
+                                 cookie=config["tgtg"]["cookie"])
+    except KeyError:
         email = input("Type your TooGoodToGo email address: ")
         client = TgtgClient(email=email)
         tgtg_creds = client.get_credentials()
         print(tgtg_creds)
         config['tgtg'] = tgtg_creds
-        f.seek(0)
-        json.dump(config, f, indent = 4)
-        f.truncate()
-        tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'], refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'], cookie=config['tgtg']['cookie'])
-    except:
-        print(traceback.format_exc())
-        exit(1)
-except:
-    print("Unexpected error")
-    print(traceback.format_exc())
-    exit(1)
-try:
-    bot_token = config['telegram']["bot_token"]
-    if bot_token == "BOTTOKEN":
-        raise KeyError
-except KeyError:
-    print(f"Failed to obtain Telegram bot token.\n Put it into config.json.")
-    exit(1)
-except:
-    print(traceback.format_exc())
-    exit(1)
+        dump_to_config()
+        tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'],
+                                 refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'],
+                                 cookie=config['tgtg']['cookie'])
+    except Exception as e:
+        logging.error("Unexpected error")
+        raise e
 
-try:
-    bot_chatID = str(config['telegram']["bot_chatID"])
-    if bot_chatID == "0":
-        # Get chat ID
-        pin = ''.join(random.choice(string.digits) for x in range(6))
-        print("Please type \"" + pin + "\" to the bot.")
-        while bot_chatID == "0":
-            response = requests.get('https://api.telegram.org/bot' + bot_token + '/getUpdates?limit=1&offset=-1') 
-            # print(response.json())
-            res = response.json()
-            if res["result"] and res['result'][0]['message']['text'] == pin:
-                bot_chatID = str(res['result'][0]['message']['chat']['id'])
-                print("Your chat id:" + bot_chatID)
-                config['telegram']['bot_chatID'] = int(bot_chatID)
-                f.seek(0)
-                json.dump(config, f, indent = 4)
-                f.truncate()
-            time.sleep(1)
-except KeyError:
-    print(f"Failed to obtain Telegram chat ID.")
-    exit(1)
-except:
-    print(traceback.format_exc())
-    exit(1)
-
-try:
-    f.close()
-except:
-    print(traceback.format_exc())
-    exit(1)
-
-# Init the favourites in stock list as a global variable
-tgtg_in_stock = list()
-if os.path.exists("tgtg_in_stock.json"):
     try:
-        tgtg_in_stock = json.load(open("tgtg_in_stock.json"))
-    except:
-        pass
-foodsi_in_stock = list()
+        bot_token = config['telegram']["bot_token"]
+        if bot_token == "BOTTOKEN":
+            raise KeyError
+    except KeyError:
+        logging.error(f"Failed to obtain Telegram bot token.\n Put it into config.json.")
+        return 1
 
+    try:
+        t = TelegramBot(bot_token, safe_mode=True)
+        t.bootstrap()
+    except Exception as e:
+        logging.error("error while bootstrapping the telegram bot:")
+        raise e
 
-def telegram_bot_sendtext(bot_message, only_to_admin=True):
-    """
-    Helper function: Send a message with the specified telegram bot.
-    It can be specified if both users or only the admin receives the message
-    Follow this article to figure out a specific chatID: https://medium.com/@ManHay_Hong/how-to-create-a-telegram-bot-and-send-messages-with-python-4cf314d9fa3e
-    """
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + quote(bot_message)
-    response = requests.get(send_text)
-    return response.json()
+    try:
+        admin_chat_id = str(config['telegram']["admin_chat_id"])
+        if admin_chat_id == "0":
+            # Get chat ID
+            pin = ''.join(random.choices(string.digits, k=6))
+            print("Please type \"" + pin + "\" to the bot by the admin chat.")
+            while admin_chat_id == "0":
+                for u in t.get_updates():
+                    if u.type == "text" and u.content.text == pin:
+                        bot_chat_id = str(u.content.chat.id)
+                        print("Your chat id:" + bot_chat_id)
+                        config['telegram']['admin_chat_id'] = int(bot_chat_id)
+                        dump_to_config()
+        admin = Chat.by_id(admin_chat_id)
 
-def telegram_bot_sendimage(image_url, image_caption=None):
-    """
-    For sending an image in Telegram, that can also be accompanied by an image caption
-    """
-    # Prepare the url for an telegram API call to send a photo
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendPhoto?chat_id=' + bot_chatID + '&photo=' + image_url
-    # If the argument gets passed, at a caption to the image
-    if image_caption != None:
-        send_text += '&parse_mode=Markdown&caption=' + quote(image_caption)
-    response = requests.get(send_text)
-    return response.json()
+        bot_chat_id = str(config['telegram']["bot_chat_id"])
+        if bot_chat_id == "0":
+            # Get chat ID
+            pin = ''.join(random.choices(string.digits, k=6))
+            print("Please type \"" + pin + "\" to the bot by the target chat.")
+            while bot_chat_id == "0":
+                for u in t.get_updates():
+                    if u.type == "text" and u.content.text == pin:
+                        bot_chat_id = str(u.content.chat.id)
+                        print("Your chat id:" + bot_chat_id)
+                        config['telegram']['bot_chat_id'] = int(bot_chat_id)
+                        dump_to_config()
+        target = Chat.by_id(bot_chat_id)
+    except KeyError:
+        logging.error(f"Failed to obtain Telegram chat ID.")
+        return 1
+    except Exception as e:
+        raise e
 
-def telegram_bot_delete_message(message_id):
-    """
-    For deleting a Telegram message
-    """
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/deleteMessage?chat_id=' + bot_chatID + '&message_id=' + str(message_id)
-    response = requests.get(send_text)
-    return response.json()
+    # Init the favourites in stock list as a global variable
+    tgtg_in_stock = list()
+    if args.stock is None:
+        args.stock = "tgtg_in_stock.json"
 
-def parse_tgtg_api(api_result):
-    """
-    For fideling out the few important information out of the api response
-    """
-    result = list()
-    # Go through all stores, that are returned with the api
-    for store in api_result:
-        current_item = dict()
-        current_item['id'] = store['item']['item_id']
-        current_item['store_name'] = store['store']['store_name']
-        current_item['items_available'] = store['items_available']
-        if current_item['items_available'] == 0:
+    if os.path.exists(args.stock):
+        tgtg_in_stock = load(open(args.stock))
+    else:
+        logging.warning("%s will be created since it doesn't exists", args.stock)
+
+    #
+    # else:
+    #     if os.path.exists("tgtg_in_stock.json"):
+    #         args.stock = "tgtg_in_stock.json"
+    #         try:
+    #             tgtg_in_stock = json.load(open("tgtg_in_stock.json"))
+    #         except Exception as e:
+    #             logging.error("cannot load from %s:", args.stock)
+    #             raise e
+
+    def telegram_bot_sendtext(bot_message, only_to_admin=False):
+        """
+        Helper function: Send a message with the specified telegram bot.
+        It can be specified if both users or only the admin receives the message
+        Follow this article to figure out a specific chat_id: https://medium.com/@ManHay_Hong/how-to-create-a-telegram-bot-and-send-messages-with-python-4cf314d9fa3e
+        """
+        return t.sendMessage(target, bot_message, parse_mode="Markdown")
+
+    def telegram_bot_sendimage(image_url, image_caption=None, only_admins=False):
+        """
+        For sending an image in Telegram, that can also be accompanied by an image caption
+        """
+        # Prepare the url for an telegram API call to send a photo
+        return t.sendPhoto(target, image_url, image_caption)
+
+    def telegram_bot_delete_message(message_id):
+        """
+        For deleting a Telegram message
+        """
+        t.deleteMessage(Message.by_id(message_id))
+
+    def parse_tgtg_api(api_result):
+        """
+        For fideling out the few important information out of the api response
+        """
+        result = list()
+        # Go through all stores, that are returned with the api
+        for store in api_result:
+            current_item = dict()
+            current_item['id'] = store['item']['item_id']
+            current_item['store_name'] = store['store']['store_name']
+            current_item['items_available'] = store['items_available']
+            if current_item['items_available'] == 0:
+                result.append(current_item)
+                continue
+            current_item['description'] = store['item']['description']
+            current_item['category_picture'] = store['item']['cover_picture']['current_url']
+            current_item['price_including_taxes'] = str(store['item']['price_including_taxes']['minor_units'])[
+                                                    :-(store['item']['price_including_taxes']['decimals'])] + "." + str(
+                store['item']['price_including_taxes']['minor_units'])[-(
+            store['item']['price_including_taxes']['decimals']):] + store['item']['price_including_taxes']['code']
+            current_item['value_including_taxes'] = str(store['item']['value_including_taxes']['minor_units'])[
+                                                    :-(store['item']['value_including_taxes']['decimals'])] + "." + str(
+                store['item']['value_including_taxes']['minor_units'])[-(
+            store['item']['value_including_taxes']['decimals']):] + store['item']['value_including_taxes']['code']
+            try:
+                localPickupStart = datetime.datetime.strptime(store['pickup_interval']['start'],
+                                                              '%Y-%m-%dT%H:%M:%S%z').replace(
+                    tzinfo=datetime.timezone.utc).astimezone(tz=None)
+                localPickupEnd = datetime.datetime.strptime(store['pickup_interval']['end'],
+                                                            '%Y-%m-%dT%H:%M:%S%z').replace(
+                    tzinfo=datetime.timezone.utc).astimezone(tz=None)
+                current_item['pickup_start'] = maya.parse(
+                    localPickupStart).slang_date().capitalize() + " " + localPickupStart.strftime('%H:%M')
+                current_item['pickup_end'] = maya.parse(
+                    localPickupEnd).slang_date().capitalize() + " " + localPickupEnd.strftime('%H:%M')
+            except KeyError:
+                current_item['pickup_start'] = None
+                current_item['pickup_end'] = None
+            try:
+                current_item['rating'] = round(store['item']['average_overall_rating']['average_overall_rating'], 2)
+            except KeyError:
+                current_item['rating'] = None
             result.append(current_item)
-            continue
-        current_item['description'] = store['item']['description']
-        current_item['category_picture'] = store['item']['cover_picture']['current_url']
-        current_item['price_including_taxes'] = str(store['item']['price_including_taxes']['minor_units'])[:-(store['item']['price_including_taxes']['decimals'])] + "." + str(store['item']['price_including_taxes']['minor_units'])[-(store['item']['price_including_taxes']['decimals']):]+store['item']['price_including_taxes']['code']
-        current_item['value_including_taxes'] = str(store['item']['value_including_taxes']['minor_units'])[:-(store['item']['value_including_taxes']['decimals'])] + "." + str(store['item']['value_including_taxes']['minor_units'])[-(store['item']['value_including_taxes']['decimals']):]+store['item']['value_including_taxes']['code']
+        return result
+
+    def toogoodtogo():
+        """
+        Retrieves the data from tgtg API and selects the message to send.
+        """
+
+        # Get the global variable of items in stock
+        global tgtg_in_stock
+
+        # Get all favorite items
+        api_response = tgtg_client.get_items(
+            favorites_only=False,
+            latitude=config['location']['lat'],
+            longitude=config['location']['long'],
+            radius=config['location']['range'],
+            page_size=300
+        )
+
+        parsed_api = parse_tgtg_api(api_response)
+
+        added, modified, deleted = 0, 0, 0
+
+        def format_store(it):
+            return f"[{it['store_name']}](https://share.toogoodtogo.com/item/{it['id']})"
+
+        def prepare_text(it):
+            message = f"🍽 There are {new_stock} new goodie bags at {format_store(it)}\n" \
+                      f"_{it['description']}_\n" \
+                      f"💰 *{it['price_including_taxes']}*/{it['value_including_taxes']}\n"
+            if 'rating' in it:
+                message += f"⭐️ {it['rating']}/5\n"
+            if 'pickup_start' and 'pickup_end' in it:
+                message += f"⏰ {it['pickup_start']} - {it['pickup_end']}\n"
+            message += "ℹ️ toogoodtogo.com"
+            return message
+
+        # Go through all favourite items and compare the stock
+        for item in parsed_api:
+            try:
+                old_stock = [stock['items_available'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
+            except IndexError:
+                old_stock = None
+            try:
+                item['msg_id'] = [stock['msg_id'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
+                original_message = Message.by_id(item["msg_id"], target.id)
+            except:
+                original_message = None
+
+            new_stock = item['items_available']
+
+            # Check, if the stock has changed. Send a message if so.
+            if new_stock != old_stock:
+                # Check if the stock was replenished, send an encouraging image message
+                if old_stock is None or original_message is None:
+                    added += 1
+                    text = prepare_text(item)
+                    tg = t.sendPhoto(target, item['category_picture'], text)
+                    item['msg_id'] = tg.id
+                else:
+                    text = prepare_text(item)
+                    # try:
+                    t.editMessageCaption(original_message, text)
+                    # except TypeError as e:
+                    #     if "description" in e and
+
+                    upd_text = None
+                    if new_stock == 0:
+                        upd_text = f"Oh no! {format_store(item)} has sold out its bags😢"
+                    elif new_stock > old_stock:
+                        upd_text = f"New bags at {format_store(item)}!"
+                    elif old_stock > new_stock > 2:
+                        upd_text = f"Quick! Bags at {format_store(item)} are running short!"
+
+                    if upd_text is not None:
+                        t.sendMessage(
+                            target,
+                            upd_text,
+                            reply_to_message=original_message,
+                            a={"disable_web_page_preview": True}
+                        )
+
+        # Reset the global information with the newest fetch
+        tgtg_in_stock = parsed_api
+        dump_stock()
+
+        # Print out some maintenance info in the terminal
+        print(f"TGTG: API run at {time.ctime(time.time())} successful.")
+
+        if added + modified + deleted > 0:
+            t.sendMessage(admin, f"Updates sent to target: {added} added, {modified} modified, {deleted} deleted")
+        # for item in parsed_api:
+        #     print(f"{item['store_name']}({item['id']}): {item['items_available']}")
+
+    def still_alive():
+        """
+        This function gets called every 24 hours and sends a 'still alive' message to the admin.
+        """
+        message = f"Current time: {time.ctime(time.time())}. The bot is still running. "
+        t.sendMessage(admin, message)
+
+    def refresh():
+        """
+        Function that gets called via schedule every 1 minute.
+        Retrieves the data from services APIs and selects the messages to send.
+        """
         try:
-            localPickupStart = datetime.datetime.strptime(store['pickup_interval']['start'],'%Y-%m-%dT%H:%M:%S%z').replace(tzinfo=datetime.timezone.utc).astimezone(tz=None)
-            localPickupEnd = datetime.datetime.strptime(store['pickup_interval']['end'],'%Y-%m-%dT%H:%M:%S%z').replace(tzinfo=datetime.timezone.utc).astimezone(tz=None)
-            current_item['pickup_start'] = maya.parse(localPickupStart).slang_date().capitalize() + " " + localPickupStart.strftime('%H:%M')
-            current_item['pickup_end'] = maya.parse(localPickupEnd).slang_date().capitalize() + " " + localPickupEnd.strftime('%H:%M')
-        except KeyError:
-            current_item['pickup_start'] = None
-            current_item['pickup_end'] = None
-        try:
-            current_item['rating'] = round(store['item']['average_overall_rating']['average_overall_rating'], 2)
-        except KeyError:
-            current_item['rating'] = None
-        result.append(current_item)
-    return result
-
-def toogoodtogo():
-    """
-    Retrieves the data from tgtg API and selects the message to send.
-    """
-
-    # Get the global variable of items in stock
-    global tgtg_in_stock
-
-    # Get all favorite items
-    api_response = tgtg_client.get_items(
-        favorites_only=False,
-        latitude=config['location']['lat'],
-        longitude=config['location']['long'],
-        radius=config['location']['range'],
-        page_size=300
-    )
-
-    parsed_api = parse_tgtg_api(api_response)
-
-    # Go through all favourite items and compare the stock
-    for item in parsed_api:
-        try:
-            old_stock = [stock['items_available'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
-        except IndexError:
-            old_stock = 0
-        try:
-            item['msg_id'] = [stock['msg_id'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
+            toogoodtogo()
         except:
-            pass
+            print(traceback.format_exc())
+            t.sendMessage(admin, "Error occured: \n```" + str(traceback.format_exc()) + "```")
 
-        new_stock = item['items_available']
+    # Use schedule to set up a recurrent checking
+    schedule.every(1).minutes.do(refresh)
+    schedule.every(24).hours.do(still_alive)
 
-        # Check, if the stock has changed. Send a message if so.
-        if new_stock != old_stock:
-            # Check if the stock was replenished, send an encouraging image message
-            if old_stock == 0 and new_stock > 0:
-                message = f"🍽 There are {new_stock} new goodie bags at [{item['store_name']}](https://share.toogoodtogo.com/item/{item['id']})\n"\
-                f"_{item['description']}_\n"\
-                f"💰 *{item['price_including_taxes']}*/{item['value_including_taxes']}\n"
-                if 'rating' in item:
-                    message += f"⭐️ {item['rating']}/5\n"
-                if 'pickup_start' and 'pickup_end' in item:
-                    message += f"⏰ {item['pickup_start']} - {item['pickup_end']}\n"
-                message += "ℹ️ toogoodtogo.com"
-                tg = telegram_bot_sendimage(item['category_picture'], message)
-                try: 
-                    item['msg_id'] = tg['result']['message_id']
-                except:
-                    print(json.dumps(tg))
-                    print(item['category_picture'])
-                    print(message)
-                    print(traceback.format_exc())
-            elif old_stock > new_stock and new_stock != 0:
-                # customer feedback: This message is not needed
-                pass
-                ## Prepare a generic string, but with the important info
-                # message = f" 📉 Decrease from {old_stock} to {new_stock} available goodie bags at {[item['store_name'] for item in new_api_result if item['item_id'] == item_id][0]}."
-                # telegram_bot_sendtext(message)
-            elif old_stock > new_stock and new_stock == 0:
-                # message = f" ⭕ Sold out! There are no more goodie bags available at {item['store_name']}."
-                # telegram_bot_sendtext(message)
-                try: 
-                    tg = telegram_bot_delete_message([stock['msg_id'] for stock in tgtg_in_stock if stock['id'] == item['id']][0])
-                except:
-                    print(f"Failed to remove message for item id: {item['id']}")
-                    print(traceback.format_exc())
-            else:
-                # Prepare a generic string, but with the important info
-                message = f"There was a change of number of goodie bags in stock from {old_stock} to {new_stock} at {item['store_name']}."
-                telegram_bot_sendtext(message)
-
-    # Reset the global information with the newest fetch
-    tgtg_in_stock = parsed_api
-    json.dump(tgtg_in_stock, open("tgtg_in_stock.json", "w+"))
-
-    # Print out some maintenance info in the terminal
-    print(f"TGTG: API run at {time.ctime(time.time())} successful.")
-    # for item in parsed_api:
-    #     print(f"{item['store_name']}({item['id']}): {item['items_available']}")
-
-def parse_foodsi_api(api_result):
-    """
-    For fideling out the few important information out of the api response
-    """
-    new_api_result = list()
-    # Go through all favorites linked to the account,that are returned with the api
-    for restaurant in api_result['data']:
-        current_item = restaurant
-        current_item['opened_at'] = dateutil.parser.parse(restaurant['package_day']['collection_day']['opened_at']).strftime('%H:%M')
-        current_item['closed_at'] = dateutil.parser.parse(restaurant['package_day']['collection_day']['closed_at']).strftime('%H:%M')
-        if (restaurant['package_day']['meals_left'] is None):
-            current_item['package_day']['meals_left'] = 0
-        new_api_result.append(current_item)
-
-    return new_api_result
-def foodsi():
-    """
-    Retrieves the data from foodsi API and selects the message to send.
-    """
-    items = list()
-    page = 1
-    totalpages = 1
-    while page <= totalpages:
-        req_json = {
-            "page": page,
-            "per_page": 15,
-            "distance": {
-                "lat": config['location']['lat'],
-                "lng": config['location']['long'],
-                "range": config['location']['range']*1000
-            },
-            "hide_unavailable": False,
-            "food_type": [],
-            "collection_time": {
-                "from": "00:00:00",
-                "to": "23:59:59"
-            }
-        }
-        foodsi_api = requests.post('https://api.foodsi.pl/api/v2/restaurants', headers = {'Content-type':'application/json', 'system-version':'android_3.0.0', 'user-agent':'okhttp/3.12.0'}, data = json.dumps(req_json))
-        items += parse_foodsi_api(foodsi_api.json())
-        # print("Foodsi current page: " + str(foodsi_api.json()['current_page']))
-        # print("Foodsi total pages: " + str(foodsi_api.json()['total_pages']))
-        totalpages = foodsi_api.json()['total_pages']
-        # print("Foodsi page count: " + str(len(foodsi_api.json()['data'])))
-        page += 1
-    print("Foodsi total items: " + str(len(items)))
-    # Get the global variable of items in stock
-    global foodsi_in_stock
-
-    # Go through all favourite items and compare the stock
-    for item in items:
-        try:
-            old_stock = [stock['package_day']['meals_left'] for stock in foodsi_in_stock if stock['id'] == item['id']][0]
-        except IndexError:
-            old_stock = 0
-        try:
-            item['msg_id'] = [stock['msg_id'] for stock in foodsi_in_stock if stock['id'] == item['id']][0]
-        except:
-            pass
-
-        new_stock = item['package_day']['meals_left']
-
-        # Check, if the stock has changed. Send a message if so.
-        if new_stock != old_stock:
-            # Check if the stock was replenished, send an encouraging image message
-            if old_stock == 0 and new_stock > 0:
-                #TODO: tommorrow date
-                message = f"🍽 There are {new_stock} new goodie bags at [{item['name']}]({item['url']})\n"\
-                f"_{item['meal']['description']}_\n"\
-                f"💰 *{item['meal']['price']}PLN*/{item['meal']['original_price']}PLN\n"\
-                f"⏰ {item['opened_at']}-{item['closed_at']}\n"\
-                "ℹ️ foodsi.pl"
-                # message += f"\ndebug id: {item['id']}"
-                tg = telegram_bot_sendimage(item['image']['url'], message)
-                try: 
-                    item['msg_id'] = tg['result']['message_id']
-                except:
-                    print(json.dumps(tg))
-                    print(item['image']['url'])
-                    print(message)
-                    print(traceback.format_exc())
-            elif old_stock > new_stock and new_stock != 0:
-                # customer feedback: This message is not needed
-                pass
-                ## Prepare a generic string, but with the important info
-                # message = f" 📉 Decrease from {old_stock} to {new_stock} available goodie bags at {[item['name'] for item in new_api_result if item['id'] == item_id][0]}."
-                # telegram_bot_sendtext(message)
-            elif old_stock > new_stock and new_stock == 0:
-                # message = f" ⭕ Sold out! There are no more goodie bags available at {item['name']}."
-                # telegram_bot_sendtext(message)
-                try: 
-                    tg = telegram_bot_delete_message([stock['msg_id'] for stock in foodsi_in_stock if stock['id'] == item['id']][0])
-                except:
-                    print(f"Failed to remove message for item id: {item['id']}")
-                    print(traceback.format_exc())
-            else:
-                # Prepare a generic string, but with the important info
-                message = f"There was a change of number of goodie bags in stock from {old_stock} to {new_stock} at {item['name']}."
-                telegram_bot_sendtext(message)
-
-    # Reset the global information with the newest fetch
-    foodsi_in_stock = items
-
-    # Print out some maintenance info in the terminal
-    print(f"Foodsi: API run at {time.ctime(time.time())} successful.")
-    # for item in foodsi_in_stock:
-    #     print(f"{item['name']}({item['id']}): {item['package_day']['meals_left']}")
-
-
-def still_alive():
-    """
-    This function gets called every 24 hours and sends a 'still alive' message to the admin.
-    """
-    message = f"Current time: {time.ctime(time.time())}. The bot is still running. "
-    telegram_bot_sendtext(message)
-
-def refresh():
-    """
-    Function that gets called via schedule every 1 minute.
-    Retrieves the data from services APIs and selects the messages to send.
-    """
+    # Description of the service, that gets send once
+    t.sendMessage(
+        admin,
+        "The bot script has started successfully. The bot checks every 1 minute, if there is something new at "
+        "TooGoodToGo. Every 24 hours, the bots sends a \"still alive\" message.")
+    refresh()
     try:
-        toogoodtogo()
-        foodsi()
+        while True:
+            # run_pending
+            schedule.run_pending()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        t.sendMessage(admin, f"Shutting down bot. Reason: admin interrupt")
     except:
-        print(traceback.format_exc())
-        telegram_bot_sendtext("Error occured: \n```" + str(traceback.format_exc()) + "```")
+        reason = f"exception: \n```{traceback.format_exc()}```"
+        t.sendMessage(admin, f"Shutting down bot. Reason: {reason}")
 
-# Use schedule to set up a recurrent checking
-schedule.every(1).minutes.do(refresh)
-schedule.every(24).hours.do(still_alive)
 
-# Description of the service, that gets send once
-telegram_bot_sendtext("The bot script has started successfully. The bot checks every 1 minute, if there is something new at TooGoodToGo or Foodsi. Every 24 hours, the bots sends a \"still alive\" message.")
-refresh()
-while True:
-    # run_pending
-    schedule.run_pending()
-    time.sleep(1)
+if __name__ == "__main__":
+    argp = ArgumentParser(prog="tgtg_bot")
+    argp.add_argument("--configs", required=False, help="Specify different location for config files")
+    argp.add_argument("--stock", required=False, help="Specify different location for tgtg stock file")
+
+    args = argp.parse_args()
+
+    exit(main())

@@ -1,11 +1,13 @@
 {
     "telegram": {
         "bot_token": "",
-        "bot_chatID": 0
+        "bot_chat_id": 0,
+        "admin_chat_id": 0
     },
     "location": {
         "lat": 0.0,
         "long": 0.0,
         "range": 30
-    }
+    },
+    "tgtg": {}
 }
