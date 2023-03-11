@@ -90,7 +90,7 @@ def main():
         email = input("Type your TooGoodToGo email address: ")
         client = TgtgClient(email=email)
         tgtg_creds = client.get_credentials()
-        print(tgtg_creds)
+        logging.debug(tgtg_creds)
         config['tgtg'] = tgtg_creds
         dump_to_config()
         tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'],
@@ -120,12 +120,12 @@ def main():
         if admin_chat_id == "0":
             # Get chat ID
             pin = ''.join(random.choices(string.digits, k=6))
-            print("Please type \"" + pin + "\" to the bot by the admin chat.")
+            logging.info("Please type \"" + pin + "\" to the bot by the admin chat.")
             while admin_chat_id == "0":
                 for u in t.get_updates():
                     if u.type == "text" and u.content.text == pin:
                         bot_chat_id = str(u.content.chat.id)
-                        print("Your chat id:" + bot_chat_id)
+                        logging.debug("Your chat id:" + bot_chat_id)
                         config['telegram']['admin_chat_id'] = int(bot_chat_id)
                         dump_to_config()
         admin = Chat.by_id(admin_chat_id)
@@ -134,12 +134,12 @@ def main():
         if bot_chat_id == "0":
             # Get chat ID
             pin = ''.join(random.choices(string.digits, k=6))
-            print("Please type \"" + pin + "\" to the bot by the target chat.")
+            logging.info("Please type \"" + pin + "\" to the bot by the target chat.")
             while bot_chat_id == "0":
                 for u in t.get_updates():
                     if u.type == "text" and u.content.text == pin:
                         bot_chat_id = str(u.content.chat.id)
-                        print("Your chat id:" + bot_chat_id)
+                        logging.debug("Your chat id:" + bot_chat_id)
                         config['telegram']['bot_chat_id'] = int(bot_chat_id)
                         dump_to_config()
         target = Chat.by_id(bot_chat_id)
@@ -158,37 +158,6 @@ def main():
         tgtg_in_stock = load(open(args.stock))
     else:
         logging.warning("%s will be created since it doesn't exists", args.stock)
-
-    #
-    # else:
-    #     if os.path.exists("tgtg_in_stock.json"):
-    #         args.stock = "tgtg_in_stock.json"
-    #         try:
-    #             tgtg_in_stock = json.load(open("tgtg_in_stock.json"))
-    #         except Exception as e:
-    #             logging.error("cannot load from %s:", args.stock)
-    #             raise e
-
-    def telegram_bot_sendtext(bot_message, only_to_admin=False):
-        """
-        Helper function: Send a message with the specified telegram bot.
-        It can be specified if both users or only the admin receives the message
-        Follow this article to figure out a specific chat_id: https://medium.com/@ManHay_Hong/how-to-create-a-telegram-bot-and-send-messages-with-python-4cf314d9fa3e
-        """
-        return t.sendMessage(target, bot_message, parse_mode="Markdown")
-
-    def telegram_bot_sendimage(image_url, image_caption=None, only_admins=False):
-        """
-        For sending an image in Telegram, that can also be accompanied by an image caption
-        """
-        # Prepare the url for an telegram API call to send a photo
-        return t.sendPhoto(target, image_url, image_caption)
-
-    def telegram_bot_delete_message(message_id):
-        """
-        For deleting a Telegram message
-        """
-        t.deleteMessage(Message.by_id(message_id))
 
     def parse_tgtg_api(api_result):
         """
@@ -215,16 +184,16 @@ def main():
                 store['item']['value_including_taxes']['minor_units'])[-(
             store['item']['value_including_taxes']['decimals']):] + store['item']['value_including_taxes']['code']
             try:
-                localPickupStart = datetime.datetime.strptime(store['pickup_interval']['start'],
+                local_pickup_start = datetime.datetime.strptime(store['pickup_interval']['start'],
+                                                                '%Y-%m-%dT%H:%M:%S%z').replace(
+                    tzinfo=datetime.timezone.utc).astimezone(tz=None)
+                local_pickup_end = datetime.datetime.strptime(store['pickup_interval']['end'],
                                                               '%Y-%m-%dT%H:%M:%S%z').replace(
                     tzinfo=datetime.timezone.utc).astimezone(tz=None)
-                localPickupEnd = datetime.datetime.strptime(store['pickup_interval']['end'],
-                                                            '%Y-%m-%dT%H:%M:%S%z').replace(
-                    tzinfo=datetime.timezone.utc).astimezone(tz=None)
                 current_item['pickup_start'] = maya.parse(
-                    localPickupStart).slang_date().capitalize() + " " + localPickupStart.strftime('%H:%M')
+                    local_pickup_start).slang_date().capitalize() + " " + local_pickup_start.strftime('%H:%M')
                 current_item['pickup_end'] = maya.parse(
-                    localPickupEnd).slang_date().capitalize() + " " + localPickupEnd.strftime('%H:%M')
+                    local_pickup_end).slang_date().capitalize() + " " + local_pickup_end.strftime('%H:%M')
             except KeyError:
                 current_item['pickup_start'] = None
                 current_item['pickup_end'] = None
@@ -287,45 +256,44 @@ def main():
             # Check, if the stock has changed. Send a message if so.
             if new_stock != old_stock:
                 # Check if the stock was replenished, send an encouraging image message
-                if (old_stock is None or original_message is None) and new_stock > 0:
-                    added += 1
-                    text = prepare_text(item)
-                    tg = t.sendPhoto(target, item['category_picture'], text)
-                    item['msg_id'] = tg.id
-                else:
-                    text = prepare_text(item)
-                    # try:
-                    t.editMessageCaption(original_message, text)
-                    # except TypeError as e:
-                    #     if "description" in e and
+                if new_stock > 0:
+                    if old_stock is None or original_message is None:
+                        added += 1
+                        text = prepare_text(item)
+                        tg = t.sendPhoto(target, item['category_picture'], text)
+                        item['msg_id'] = tg.id
+                    else:
+                        text = prepare_text(item)
+                        # try:
+                        t.editMessageCaption(original_message, text)
+                        # except TypeError as e:
+                        #     if "description" in e and
 
-                    upd_text = None
-                    if new_stock == 0:
-                        upd_text = f"Oh no! {format_store(item)} has sold out its bags😢"
-                    elif new_stock > old_stock:
-                        upd_text = f"New bags at {format_store(item)}!"
-                    elif old_stock > new_stock > 2:
-                        upd_text = f"Quick! Bags at {format_store(item)} are running short!"
+                        upd_text = None
+                        if new_stock == 0:
+                            upd_text = f"Oh no! {format_store(item)} has sold out its bags😢"
+                        elif new_stock > old_stock:
+                            upd_text = f"New bags at {format_store(item)}!"
+                        elif old_stock > new_stock > 2:
+                            upd_text = f"Quick! Bags at {format_store(item)} are running short!"
 
-                    if upd_text is not None:
-                        t.sendMessage(
-                            target,
-                            upd_text,
-                            reply_to_message=original_message,
-                            a={"disable_web_page_preview": True}
-                        )
+                        if upd_text is not None:
+                            t.sendMessage(
+                                target,
+                                upd_text,
+                                reply_to_message=original_message,
+                                a={"disable_web_page_preview": True}
+                            )
 
         # Reset the global information with the newest fetch
         tgtg_in_stock = parsed_api
         dump_stock()
 
         # Print out some maintenance info in the terminal
-        print(f"TGTG: API run at {time.ctime(time.time())} successful.")
+        logging.info(f"TGTG: API run at {time.ctime(time.time())} successful.")
 
         if added + modified + deleted > 0:
             t.sendMessage(admin, f"Updates sent to target: {added} added, {modified} modified, {deleted} deleted")
-        # for item in parsed_api:
-        #     print(f"{item['store_name']}({item['id']}): {item['items_available']}")
 
     def still_alive():
         """
@@ -342,7 +310,7 @@ def main():
         try:
             toogoodtogo()
         except:
-            print(traceback.format_exc())
+            logging.error(traceback.format_exc())
             t.sendMessage(admin, "Error occured: \n```" + str(traceback.format_exc()) + "```")
 
     # Use schedule to set up a recurrent checking
