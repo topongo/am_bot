@@ -287,7 +287,7 @@ def main():
             # Check, if the stock has changed. Send a message if so.
             if new_stock != old_stock:
                 # Check if the stock was replenished, send an encouraging image message
-                if old_stock is None or original_message is None:
+                if (old_stock is None or original_message is None) and new_stock > 0:
                     added += 1
                     text = prepare_text(item)
                     tg = t.sendPhoto(target, item['category_picture'], text)
