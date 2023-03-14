@@ -2,4 +2,4 @@ tgtg
 schedule
 requests
 maya
-telebotapi>=0.9.9.1
+telebotapi>=0.9.9.3

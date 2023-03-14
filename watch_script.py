@@ -2,7 +2,8 @@ from tgtg import TgtgClient
 from json import load, dump
 from argparse import ArgumentParser
 from shutil import copy
-from telebotapi import TelegramBot, Chat, Message
+from telebotapi import TelegramBot, Chat, Message, exceptions
+from copy import deepcopy
 import schedule
 import time
 import os
@@ -15,7 +16,8 @@ import string
 
 
 config = {}
-tgtg_in_stock = []
+tgtg_in_stock = {}
+logger = logging.getLogger("am_bot")
 
 
 def dump_to_config():
@@ -29,7 +31,8 @@ def dump_stock():
     global tgtg_in_stock
     global args
 
-    dump(tgtg_in_stock, open(args.stock, "w+"), indent=4)
+    to_dump = deepcopy(tgtg_in_stock)
+    dump(to_dump, open(args.stock, "w+"), indent=4)
 
 
 def main():
@@ -38,7 +41,7 @@ def main():
     global tgtg_in_stock
 
     def exit_no_config():
-        logging.error("missing configs, cannot proceed.")
+        logger.error("missing configs, cannot proceed.")
         return 2
 
     if args.configs is None:
@@ -47,10 +50,10 @@ def main():
             args.configs = "config.json"
         else:
             if os.path.exists("config.example.json"):
-                logging.warning("no config found")
+                logger.warning("no config found")
                 if input("Make a copy of example? (y/N) ") in "yY":
                     copy("config.example.json", "config.json")
-                    logging.warning("please compile the newly copied config.json, then rerun the program")
+                    logger.warning("please compile the newly copied config.json, then rerun the program")
                     exit()
                 else:
                     return exit_no_config()
@@ -60,7 +63,7 @@ def main():
         if os.path.exists(args.configs):
             config = load(open(args.configs))
         else:
-            logging.error("cannot read %s: no such file or directory", args.configs)
+            logger.error("cannot read %s: no such file or directory", args.configs)
             return exit_no_config()
 
     def validate_config(c):
@@ -90,14 +93,14 @@ def main():
         email = input("Type your TooGoodToGo email address: ")
         client = TgtgClient(email=email)
         tgtg_creds = client.get_credentials()
-        logging.debug(tgtg_creds)
+        logger.debug(tgtg_creds)
         config['tgtg'] = tgtg_creds
         dump_to_config()
         tgtg_client = TgtgClient(access_token=config['tgtg']['access_token'],
                                  refresh_token=config['tgtg']['refresh_token'], user_id=config['tgtg']['user_id'],
                                  cookie=config['tgtg']['cookie'])
     except Exception as e:
-        logging.error("Unexpected error")
+        logger.error("Unexpected error")
         raise e
 
     try:
@@ -105,14 +108,14 @@ def main():
         if bot_token == "BOTTOKEN":
             raise KeyError
     except KeyError:
-        logging.error(f"Failed to obtain Telegram bot token.\n Put it into config.json.")
+        logger.error(f"Failed to obtain Telegram bot token.\n Put it into config.json.")
         return 1
 
     try:
         t = TelegramBot(bot_token, safe_mode=True)
         t.bootstrap()
     except Exception as e:
-        logging.error("error while bootstrapping the telegram bot:")
+        logger.error("error while bootstrapping the telegram bot:")
         raise e
 
     try:
@@ -120,12 +123,12 @@ def main():
         if admin_chat_id == "0":
             # Get chat ID
             pin = ''.join(random.choices(string.digits, k=6))
-            logging.info("Please type \"" + pin + "\" to the bot by the admin chat.")
+            logger.info("Please type \"" + pin + "\" to the bot by the admin chat.")
             while admin_chat_id == "0":
                 for u in t.get_updates():
                     if u.type == "text" and u.content.text == pin:
                         bot_chat_id = str(u.content.chat.id)
-                        logging.debug("Your chat id:" + bot_chat_id)
+                        logger.debug("Your chat id:" + bot_chat_id)
                         config['telegram']['admin_chat_id'] = int(bot_chat_id)
                         dump_to_config()
         admin = Chat.by_id(admin_chat_id)
@@ -134,30 +137,30 @@ def main():
         if bot_chat_id == "0":
             # Get chat ID
             pin = ''.join(random.choices(string.digits, k=6))
-            logging.info("Please type \"" + pin + "\" to the bot by the target chat.")
+            logger.info("Please type \"" + pin + "\" to the bot by the target chat.")
             while bot_chat_id == "0":
                 for u in t.get_updates():
                     if u.type == "text" and u.content.text == pin:
                         bot_chat_id = str(u.content.chat.id)
-                        logging.debug("Your chat id:" + bot_chat_id)
+                        logger.debug("Your chat id:" + bot_chat_id)
                         config['telegram']['bot_chat_id'] = int(bot_chat_id)
                         dump_to_config()
         target = Chat.by_id(bot_chat_id)
     except KeyError:
-        logging.error(f"Failed to obtain Telegram chat ID.")
+        logger.error(f"Failed to obtain Telegram chat ID.")
         return 1
     except Exception as e:
         raise e
 
     # Init the favourites in stock list as a global variable
-    tgtg_in_stock = list()
+    tgtg_in_stock = {}
     if args.stock is None:
         args.stock = "tgtg_in_stock.json"
 
     if os.path.exists(args.stock):
         tgtg_in_stock = load(open(args.stock))
     else:
-        logging.warning("%s will be created since it doesn't exists", args.stock)
+        logger.warning("%s will be created since it doesn't exists", args.stock)
 
     def parse_tgtg_api(api_result):
         """
@@ -221,7 +224,7 @@ def main():
             page_size=300
         )
 
-        parsed_api = parse_tgtg_api(api_response)
+        parsed_api = {item["id"]: item for item in parse_tgtg_api(api_response)}
 
         added, modified, deleted = 0, 0, 0
 
@@ -229,68 +232,86 @@ def main():
             return f"[{it['store_name']}](https://share.toogoodtogo.com/item/{it['id']})"
 
         def prepare_text(it):
-            message = f"🍽 There are {new_stock} new goodie bags at {format_store(it)}\n" \
-                      f"_{it['description']}_\n" \
-                      f"💰 *{it['price_including_taxes']}*/{it['value_including_taxes']}\n"
-            if 'rating' in it:
-                message += f"⭐️ {it['rating']}/5\n"
-            if 'pickup_start' and 'pickup_end' in it:
-                message += f"⏰ {it['pickup_start']} - {it['pickup_end']}\n"
-            message += "ℹ️ toogoodtogo.com"
+            if "description" not in it:
+                message = it["msg"]["body"]
+            else:
+                message = f"🍽 There are {{}} bags at {format_store(it)}\n" \
+                          f"_{it['description']}_\n" \
+                          f"💰 *{it['price_including_taxes']}*/{it['value_including_taxes']}\n"
+                if 'rating' in it:
+                    message += f"⭐️ {it['rating']}/5\n"
+                if 'pickup_start' and 'pickup_end' in it:
+                    message += f"⏰ {it['pickup_start']} - {it['pickup_end']}\n"
+                message += "ℹ️ toogoodtogo.com"
+                it["msg"]["body"] = message
             return message
 
+        def quote(m, o_s, n_s, it):
+            upd_text = None
+            if n_s == 0:
+                upd_text = f"Oh no! {format_store(item)} has sold out its bags 😢"
+            elif n_s > o_s:
+                upd_text = f"{format_store(item)} added {n_s - o_s} bags!"
+            elif o_s > n_s <= 1:
+                upd_text = f"Quick! Only one bag left at {format_store(item)}!"
+
+            if upd_text is not None:
+                if "update" in it["msg"] and it["msg"]["update"] is not None:
+                    try:
+                        t.deleteMessage(Message.by_id(it["msg"]["update"], target.id))
+                    except exceptions.MessageNotFound:
+                        pass
+                it["msg"]["update"] = t.sendMessage(
+                    target,
+                    upd_text,
+                    reply_to_message=m,
+                    a={"disable_web_page_preview": True}
+                ).id
+
+        def new_message(it, n_s):
+            txt = prepare_text(it).format(n_s)
+            tg = t.sendPhoto(target, it["category_picture"], txt)
+            it["msg"]["id"] = tg.id
+
         # Go through all favourite items and compare the stock
-        for item in parsed_api:
+        for id_, item in parsed_api.items():
             try:
-                old_stock = [stock['items_available'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
-            except IndexError:
+                old_stock = tgtg_in_stock[id_]["items_available"]
+                item['msg'] = tgtg_in_stock[id_]["msg"]
+                try:
+                    om = Message.by_id(item["msg"]["id"], target.id)
+                except KeyError:
+                    om = None
+            except KeyError:
+                item["msg"] = {}
                 old_stock = None
-            try:
-                item['msg_id'] = [stock['msg_id'] for stock in tgtg_in_stock if stock['id'] == item['id']][0]
-                original_message = Message.by_id(item["msg_id"], target.id)
-            except:
-                original_message = None
+                om = None
 
             new_stock = item['items_available']
 
             # Check, if the stock has changed. Send a message if so.
-            if new_stock != old_stock:
-                # Check if the stock was replenished, send an encouraging image message
-                if new_stock > 0:
-                    if old_stock is None or original_message is None:
-                        added += 1
-                        text = prepare_text(item)
-                        tg = t.sendPhoto(target, item['category_picture'], text)
-                        item['msg_id'] = tg.id
-                    else:
-                        text = prepare_text(item)
-                        # try:
-                        t.editMessageCaption(original_message, text)
-                        # except TypeError as e:
-                        #     if "description" in e and
 
-                        upd_text = None
-                        if new_stock == 0:
-                            upd_text = f"Oh no! {format_store(item)} has sold out its bags😢"
-                        elif new_stock > old_stock:
-                            upd_text = f"New bags at {format_store(item)}!"
-                        elif old_stock > new_stock > 2:
-                            upd_text = f"Quick! Bags at {format_store(item)} are running short!"
-
-                        if upd_text is not None:
-                            t.sendMessage(
-                                target,
-                                upd_text,
-                                reply_to_message=original_message,
-                                a={"disable_web_page_preview": True}
-                            )
+            if new_stock != 0 and (old_stock is None or om is None):
+                new_message(item, new_stock)
+            elif old_stock is not None:
+                if new_stock != old_stock:
+                    text = prepare_text(item).format(new_stock)
+                    try:
+                        try:
+                            t.editMessageCaption(om, text)
+                        except exceptions.MessageNotModified:
+                            pass
+                        quote(om, old_stock, new_stock, item)
+                    except exceptions.MessageNotFound:
+                        if new_stock > 0:
+                            new_message(item, new_stock)
 
         # Reset the global information with the newest fetch
         tgtg_in_stock = parsed_api
         dump_stock()
 
         # Print out some maintenance info in the terminal
-        logging.info(f"TGTG: API run at {time.ctime(time.time())} successful.")
+        logger.info(f"TGTG: API run at {time.ctime(time.time())} successful.")
 
         if added + modified + deleted > 0:
             t.sendMessage(admin, f"Updates sent to target: {added} added, {modified} modified, {deleted} deleted")
@@ -310,7 +331,7 @@ def main():
         try:
             toogoodtogo()
         except:
-            logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             t.sendMessage(admin, "Error occured: \n```" + str(traceback.format_exc()) + "```")
 
     # Use schedule to set up a recurrent checking
@@ -339,7 +360,10 @@ if __name__ == "__main__":
     argp = ArgumentParser(prog="tgtg_bot")
     argp.add_argument("--configs", required=False, help="Specify different location for config files")
     argp.add_argument("--stock", required=False, help="Specify different location for tgtg stock file")
+    argp.add_argument("--log", default=1, type=int, help="Specify verbosity")
 
     args = argp.parse_args()
+    logger.setLevel(logging.DEBUG)
+    logger.getEffectiveLevel()
 
     exit(main())
